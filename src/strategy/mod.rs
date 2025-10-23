@@ -1,8 +1,5 @@
 use anyhow::{Result, anyhow};
 
-use core::panic;
-
-use crate::device::Device;
 use crate::minibatch::MiniBatch;
 
 mod strategy_1f1b;
