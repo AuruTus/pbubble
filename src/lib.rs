@@ -1,4 +1,4 @@
-mod device;
-mod minibatch;
-mod scheduler;
-mod strategy;
+pub mod stage;
+pub mod minibatch;
+pub mod scheduler;
+pub mod strategy;

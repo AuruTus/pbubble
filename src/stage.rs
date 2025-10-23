@@ -1,12 +1,12 @@
-pub struct Device {
+pub struct Stage {
     pub rank: usize,
     pub prev_rank: Option<usize>,
     pub next_rank: Option<usize>,
 }
 
-impl Device {
+impl Stage {
     pub fn new(rank: usize) -> Self {
-        Device {
+        Stage {
             rank,
             prev_rank: None,
             next_rank: None,
