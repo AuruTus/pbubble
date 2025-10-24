@@ -1,15 +1,21 @@
+/// [`Stage`] processing stage in the pipeline.
+///
+/// In interleaved pipeline parallelism strategy, each device holds multiple
+/// stages, which is also called `virtual stage`.
+///
+#[derive(Debug)]
 pub struct Stage {
-    pub rank: usize,
-    pub prev_rank: Option<usize>,
-    pub next_rank: Option<usize>,
+    pub stage_idx: usize,
+    pub prev_stage: Option<usize>,
+    pub next_stage: Option<usize>,
 }
 
 impl Stage {
-    pub fn new(rank: usize) -> Self {
+    pub fn new(stage_idx: usize) -> Self {
         Stage {
-            rank,
-            prev_rank: None,
-            next_rank: None,
+            stage_idx,
+            prev_stage: None,
+            next_stage: None,
         }
     }
 }
