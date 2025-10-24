@@ -1,15 +1,13 @@
-use std::cell::RefCell;
-
 use anyhow::{Ok, Result, anyhow};
 
-use crate::strategy::{self, Strategy};
+use crate::strategy::Strategy;
 
 use crate::minibatch::MiniBatch;
 use crate::stage::Stage;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct StageState {
-    device: Stage,
+    stage: Stage,
     forward_idx: usize,
     backward_idx: usize,
     curr_time: usize,
@@ -18,7 +16,7 @@ struct StageState {
 impl StageState {
     fn new(stage_idx: usize) -> Self {
         StageState {
-            device: Stage::new(stage_idx),
+            stage: Stage::new(stage_idx),
             forward_idx: 0,
             backward_idx: 0,
             curr_time: 0,
@@ -62,8 +60,8 @@ impl Strategy1F1B {
     fn init_1f1b_devices(world_size: usize) -> Vec<StageState> {
         let mut devices: Vec<StageState> = (0..world_size).map(StageState::new).collect();
         for (rank, state) in devices.iter_mut().enumerate() {
-            state.device.prev_stage = if rank == 0 { None } else { Some(rank - 1) };
-            state.device.next_stage = if rank == world_size - 1 {
+            state.stage.prev_stage = if rank == 0 { None } else { Some(rank - 1) };
+            state.stage.next_stage = if rank == world_size - 1 {
                 None
             } else {
                 Some(rank + 1)
@@ -77,7 +75,7 @@ impl Strategy1F1B {
             .arrangements
             .as_mut()
             .ok_or(anyhow!("Arrangements not initialized"))?;
-        let rank = state.device.stage_idx;
+        let rank = state.stage.stage_idx;
 
         if state.complete(self.num_minibatch) {
             arrangement[rank].push(MiniBatch::Nops);
@@ -85,8 +83,8 @@ impl Strategy1F1B {
             return Ok(());
         }
 
-        let next_rank = state.device.next_stage;
-        let prev_rank = state.device.prev_stage;
+        let next_rank = state.stage.next_stage;
+        let prev_rank = state.stage.prev_stage;
 
         if rank == 0 {
             if state.curr_time == 0 {
@@ -206,14 +204,18 @@ mod tests {
 
         let mut strategy = Strategy1F1B::new(WORLD_SIZE, NUM_MINIBATCH);
         assert!(strategy.stage_states.len() == WORLD_SIZE);
+        let cmp_states = strategy.stage_states.clone();
         {
             let guard = StatesGuard::guard(&mut strategy);
             assert!(guard.strategy.stage_states.is_empty());
             assert!(guard.stage_states.len() == WORLD_SIZE);
-            for state in guard.stage_states.iter() {
-                println!("{state:?}");
+            for (a, b) in guard.stage_states.iter().zip(cmp_states.iter()) {
+                assert!(a.stage.stage_idx == b.stage.stage_idx);
             }
         }
         assert!(strategy.stage_states.len() == WORLD_SIZE);
+        for (a, b) in strategy.stage_states.iter().zip(cmp_states.iter()) {
+            assert!(a.stage.stage_idx == b.stage.stage_idx);
+        }
     }
 }

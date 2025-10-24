@@ -3,7 +3,7 @@
 /// In interleaved pipeline parallelism strategy, each device holds multiple
 /// stages, which is also called `virtual stage`.
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stage {
     pub stage_idx: usize,
     pub prev_stage: Option<usize>,
