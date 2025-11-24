@@ -14,8 +14,6 @@ struct StageState {
     backward_idx: usize,
     curr_time: usize,
     warm_up: usize,
-    steady: usize,
-    cool_down: usize,
 }
 
 impl StageState {
@@ -26,8 +24,6 @@ impl StageState {
             backward_idx: 0,
             curr_time: 0,
             warm_up: 0,
-            steady: 0,
-            cool_down: 0,
         }
     }
 
@@ -44,7 +40,7 @@ pub struct Strategy1F1B {
 }
 
 impl Strategy1F1B {
-    fn init_1f1b_devices(world_size: usize, num_minibatch: usize) -> Vec<RefCell<StageState>> {
+    fn init_1f1b_devices(world_size: usize) -> Vec<RefCell<StageState>> {
         let mut devices: Vec<RefCell<StageState>> = (0..world_size).map(
             |rank   | {RefCell::new(StageState::new(rank))}
         ).collect();
@@ -57,8 +53,6 @@ impl Strategy1F1B {
                 Some(stage_idx + 1)
             };
             state.warm_up = world_size - stage_idx;
-            state.steady = num_minibatch - state.warm_up;
-            state.cool_down = num_minibatch - state.steady;
         }
         devices
     }
@@ -66,7 +60,7 @@ impl Strategy1F1B {
 
 impl Strategy for Strategy1F1B {
     fn new(world_size: usize, num_minibatch: usize) -> Self {
-        let devices = Self::init_1f1b_devices(world_size, num_minibatch);
+        let devices = Self::init_1f1b_devices(world_size);
         let arrangements = Some(vec![Vec::<MiniBatch>::new(); world_size]);
         Self {
             stage_states: devices,
