@@ -1,9 +1,12 @@
+use std::cell::{Ref, RefCell};
+use std::f32::consts::E;
+
 use anyhow::{anyhow, Ok, Result};
 
 use crate::strategy::Strategy;
 
-use crate::minibatch::MiniBatch;
-use crate::stage::Stage;
+use crate::minibatch::{self, MiniBatch};
+use crate::stage::{self, Stage};
 
 #[derive(Debug, Clone)]
 struct StageState {
@@ -11,6 +14,9 @@ struct StageState {
     forward_idx: usize,
     backward_idx: usize,
     curr_time: usize,
+    warm_up: usize,
+    steady: usize,
+    cool_down: usize,
 }
 
 impl StageState {
@@ -20,6 +26,9 @@ impl StageState {
             forward_idx: 0,
             backward_idx: 0,
             curr_time: 0,
+            warm_up: 0,
+            steady: 0,
+            cool_down: 0,
         }
     }
 
@@ -29,147 +38,36 @@ impl StageState {
 }
 
 pub struct Strategy1F1B {
-    stage_states: Vec<StageState>,
+    stage_states: Vec<RefCell<StageState>>,
     world_size: usize,
     num_minibatch: usize,
     arrangements: Option<Vec<Vec<MiniBatch>>>,
 }
 
-struct StatesGuard<'a> {
-    stage_states: Vec<StageState>,
-    strategy: &'a mut Strategy1F1B,
-}
-
-impl<'a> StatesGuard<'a> {
-    fn guard(strategy: &'a mut Strategy1F1B) -> Self {
-        let stage_states = std::mem::take(&mut strategy.stage_states);
-        StatesGuard {
-            stage_states,
-            strategy,
-        }
-    }
-}
-
-impl<'a> Drop for StatesGuard<'a> {
-    fn drop(&mut self) {
-        std::mem::swap(&mut self.stage_states, &mut self.strategy.stage_states);
-    }
-}
-
 impl Strategy1F1B {
-    fn init_1f1b_devices(world_size: usize) -> Vec<StageState> {
-        let mut devices: Vec<StageState> = (0..world_size).map(StageState::new).collect();
-        for (rank, state) in devices.iter_mut().enumerate() {
-            state.stage.prev_stage = if rank == 0 { None } else { Some(rank - 1) };
-            state.stage.next_stage = if rank == world_size - 1 {
+    fn init_1f1b_devices(world_size: usize, num_minibatch: usize) -> Vec<RefCell<StageState>> {
+        let mut devices: Vec<RefCell<StageState>> = (0..world_size).map(
+            |rank   | {RefCell::new(StageState::new(rank))}
+        ).collect();
+        for (stage_idx, state) in devices.iter_mut().enumerate() {
+            let mut state = state.borrow_mut();
+            state.stage.prev_stage = if stage_idx == 0 { None } else { Some(stage_idx - 1) };
+            state.stage.next_stage = if stage_idx == world_size - 1 {
                 None
             } else {
-                Some(rank + 1)
+                Some(stage_idx + 1)
             };
+            state.warm_up = world_size - stage_idx;
+            state.steady = num_minibatch - state.warm_up;
+            state.cool_down = num_minibatch - state.steady;
         }
         devices
-    }
-
-    fn fetch_one(&mut self, state: &mut StageState) -> Result<()> {
-        let arrangements = self
-            .arrangements
-            .as_mut()
-            .ok_or(anyhow!("Arrangements not initialized"))?;
-        let rank = state.stage.stage_idx;
-
-        if state.complete(self.num_minibatch) {
-            arrangements[rank].push(MiniBatch::Nops);
-            state.curr_time += 1;
-            return Ok(());
-        }
-
-        let next_rank = state.stage.next_stage;
-        let prev_rank = state.stage.prev_stage;
-
-        if rank == 0 {
-            if state.curr_time == 0 {
-                arrangements[rank].push(MiniBatch::Forward(0));
-                state.forward_idx += 1;
-                state.curr_time += 1;
-                return Ok(());
-            }
-            let next_rank = next_rank.unwrap();
-            let forward_batch = arrangements[rank][state.curr_time - 1].clone();
-            let backward_batch = arrangements[next_rank][state.curr_time - 1].clone();
-
-            if let MiniBatch::Backward(idx) = backward_batch {
-                debug_assert_eq!(state.backward_idx, idx);
-                arrangements[rank].push(MiniBatch::Backward(idx));
-                state.backward_idx += 1;
-            } else if let MiniBatch::Forward(idx) = forward_batch {
-                debug_assert_eq!(state.forward_idx, idx + 1);
-                arrangements[rank].push(MiniBatch::Forward(idx + 1));
-                state.forward_idx += 1;
-            } else {
-                return Err(anyhow!(
-                    "Invalid state: no forward or backward batch found for rank 0: \
-                    curr_time: {}, forward_idx: {}, backward_idx: {},
-                    arrangements: {:?}",
-                    state.curr_time,
-                    state.forward_idx,
-                    state.backward_idx,
-                    arrangements,
-                ));
-            }
-        } else if rank == self.world_size - 1 {
-            if state.curr_time == 0 {
-                arrangements[rank].push(MiniBatch::Nops);
-                state.curr_time += 1;
-                return Ok(());
-            }
-            let prev_rank = prev_rank.unwrap();
-            let forward_batch = arrangements[prev_rank][state.curr_time - 1].clone();
-            let backward_batch = arrangements[rank][state.curr_time - 1].clone();
-
-            if let MiniBatch::Forward(idx) = backward_batch {
-                debug_assert_eq!(state.backward_idx, idx);
-                arrangements[rank].push(MiniBatch::Backward(idx));
-                state.backward_idx += 1;
-            } else if let MiniBatch::Forward(idx) = forward_batch {
-                debug_assert_eq!(state.forward_idx, idx, "{arrangements:?}");
-                arrangements[rank].push(MiniBatch::Forward(idx));
-                state.forward_idx += 1;
-            } else {
-                arrangements[rank].push(MiniBatch::Nops);
-            }
-        } else {
-            if state.curr_time == 0 {
-                arrangements[rank].push(MiniBatch::Nops);
-                state.curr_time += 1;
-                return Ok(());
-            }
-            let next_rank = next_rank.unwrap();
-            let prev_rank = prev_rank.unwrap();
-            let forward_batch = arrangements[prev_rank][state.curr_time - 1].clone();
-            let backward_batch = arrangements[next_rank][state.curr_time - 1].clone();
-
-            if let MiniBatch::Backward(idx) = backward_batch {
-                debug_assert_eq!(state.backward_idx, idx);
-                arrangements[rank].push(MiniBatch::Backward(idx));
-                state.backward_idx += 1;
-            } else if let MiniBatch::Forward(idx) = forward_batch {
-                debug_assert_eq!(state.forward_idx, idx);
-                arrangements[rank].push(MiniBatch::Forward(idx));
-                state.forward_idx += 1;
-            } else {
-                arrangements[rank].push(MiniBatch::Nops);
-            }
-        }
-
-        state.curr_time += 1;
-
-        Ok(())
     }
 }
 
 impl Strategy for Strategy1F1B {
     fn new(world_size: usize, num_minibatch: usize) -> Self {
-        let devices = Self::init_1f1b_devices(world_size);
+        let devices = Self::init_1f1b_devices(world_size, num_minibatch);
         let arrangements = Some(vec![Vec::<MiniBatch>::new(); world_size]);
         Self {
             stage_states: devices,
@@ -180,15 +78,56 @@ impl Strategy for Strategy1F1B {
     }
 
     fn complete(&self) -> bool {
-        self.stage_states
-            .iter()
-            .all(|d| d.complete(self.num_minibatch))
+        self.stage_states.iter().all(
+            |s| {
+                let s = s.borrow();
+                s.forward_idx >= self.num_minibatch && s.backward_idx >= self.num_minibatch
+            }
+        )
     }
 
     fn step(&mut self) -> Result<()> {
-        let mut state_guard = StatesGuard::guard(self);
-        for state in state_guard.stage_states.iter_mut() {
-            state_guard.strategy.fetch_one(state)?;
+        let arrangements = self.arrangements
+        .as_mut()
+        .ok_or(anyhow!("Arrangements not initialized"))?;
+
+        for (stage_idx, state) in self.stage_states.iter_mut().enumerate() {
+            let mut state = state.borrow_mut();
+            let arrange = &mut arrangements[stage_idx];
+
+            if state.forward_idx < state.warm_up {
+                // warmup: n F
+                if state.curr_time < stage_idx {
+                    arrange.push(MiniBatch::Nops);
+                } else {
+                    let forward_idx = state.forward_idx;
+                    state.forward_idx += 1;
+                    arrange.push(MiniBatch::Forward(forward_idx));
+                }
+            } else if state.forward_idx < self.num_minibatch {
+                // steady: 1B1F
+                if state.curr_time < self.world_size * 2 - 1 - stage_idx {
+                    arrange.push(MiniBatch::Nops);
+                } else {
+                    let backward_idx = state.backward_idx;
+                    state.backward_idx += 1;
+                    let forward_idx = state.forward_idx;
+                    state.forward_idx += 1;
+                    arrange.extend([MiniBatch::Backward(backward_idx), MiniBatch::Forward(forward_idx)]);
+                }
+            } else if state.backward_idx < self.num_minibatch {
+                // cooldown: n B
+                let backward_idx = state.backward_idx;
+                state.backward_idx += 1;
+                arrange.push(MiniBatch::Backward(backward_idx));
+                if state.backward_idx < self.num_minibatch {
+                    arrange.push(MiniBatch::Nops);
+                }
+            } else {
+                arrange.push(MiniBatch::Nops);
+            }
+
+            state.curr_time += 1;
         }
         Ok(())
     }
@@ -204,25 +143,25 @@ impl Strategy for Strategy1F1B {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_state_guard() {
-        const WORLD_SIZE: usize = 4;
-        const NUM_MINIBATCH: usize = 8;
+    // #[test]
+    // fn test_state_guard() {
+    //     const WORLD_SIZE: usize = 4;
+    //     const NUM_MINIBATCH: usize = 8;
 
-        let mut strategy = Strategy1F1B::new(WORLD_SIZE, NUM_MINIBATCH);
-        assert!(strategy.stage_states.len() == WORLD_SIZE);
-        let cmp_states = strategy.stage_states.clone();
-        {
-            let guard = StatesGuard::guard(&mut strategy);
-            assert!(guard.strategy.stage_states.is_empty());
-            assert!(guard.stage_states.len() == WORLD_SIZE);
-            for (a, b) in guard.stage_states.iter().zip(cmp_states.iter()) {
-                assert!(a.stage.stage_idx == b.stage.stage_idx);
-            }
-        }
-        assert!(strategy.stage_states.len() == WORLD_SIZE);
-        for (a, b) in strategy.stage_states.iter().zip(cmp_states.iter()) {
-            assert!(a.stage.stage_idx == b.stage.stage_idx);
-        }
-    }
+    //     let mut strategy = Strategy1F1B::new(WORLD_SIZE, NUM_MINIBATCH);
+    //     assert!(strategy.stage_states.len() == WORLD_SIZE);
+    //     let cmp_states = strategy.stage_states.clone();
+    //     {
+    //         let guard = StatesGuard::guard(&mut strategy);
+    //         assert!(guard.strategy.stage_states.is_empty());
+    //         assert!(guard.stage_states.len() == WORLD_SIZE);
+    //         for (a, b) in guard.stage_states.iter().zip(cmp_states.iter()) {
+    //             assert!(a.stage.stage_idx == b.stage.stage_idx);
+    //         }
+    //     }
+    //     assert!(strategy.stage_states.len() == WORLD_SIZE);
+    //     for (a, b) in strategy.stage_states.iter().zip(cmp_states.iter()) {
+    //         assert!(a.stage.stage_idx == b.stage.stage_idx);
+    //     }
+    // }
 }
