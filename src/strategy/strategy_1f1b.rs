@@ -1,12 +1,11 @@
-use std::cell::{Ref, RefCell};
-use std::f32::consts::E;
+use std::cell::RefCell;
 
 use anyhow::{anyhow, Ok, Result};
 
 use crate::strategy::Strategy;
 
-use crate::minibatch::{self, MiniBatch};
-use crate::stage::{self, Stage};
+use crate::minibatch::MiniBatch;
+use crate::stage::Stage;
 
 #[derive(Debug, Clone)]
 struct StageState {
@@ -80,8 +79,7 @@ impl Strategy for Strategy1F1B {
     fn complete(&self) -> bool {
         self.stage_states.iter().all(
             |s| {
-                let s = s.borrow();
-                s.forward_idx >= self.num_minibatch && s.backward_idx >= self.num_minibatch
+                s.borrow().complete(self.num_minibatch)
             }
         )
     }
@@ -137,31 +135,4 @@ impl Strategy for Strategy1F1B {
             .take()
             .ok_or(anyhow!("Arrangements not initialized"))
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // #[test]
-    // fn test_state_guard() {
-    //     const WORLD_SIZE: usize = 4;
-    //     const NUM_MINIBATCH: usize = 8;
-
-    //     let mut strategy = Strategy1F1B::new(WORLD_SIZE, NUM_MINIBATCH);
-    //     assert!(strategy.stage_states.len() == WORLD_SIZE);
-    //     let cmp_states = strategy.stage_states.clone();
-    //     {
-    //         let guard = StatesGuard::guard(&mut strategy);
-    //         assert!(guard.strategy.stage_states.is_empty());
-    //         assert!(guard.stage_states.len() == WORLD_SIZE);
-    //         for (a, b) in guard.stage_states.iter().zip(cmp_states.iter()) {
-    //             assert!(a.stage.stage_idx == b.stage.stage_idx);
-    //         }
-    //     }
-    //     assert!(strategy.stage_states.len() == WORLD_SIZE);
-    //     for (a, b) in strategy.stage_states.iter().zip(cmp_states.iter()) {
-    //         assert!(a.stage.stage_idx == b.stage.stage_idx);
-    //     }
-    // }
 }
