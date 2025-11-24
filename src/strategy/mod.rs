@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::minibatch::MiniBatch;
 
-mod strategy_1f1b;
+pub mod strategy_1f1b;
 
 pub trait Strategy {
     fn new(world_size: usize, num_minibatch: usize) -> Self;

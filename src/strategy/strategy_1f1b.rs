@@ -1,4 +1,4 @@
-use anyhow::{Ok, Result, anyhow};
+use anyhow::{anyhow, Ok, Result};
 
 use crate::strategy::Strategy;
 
@@ -71,14 +71,14 @@ impl Strategy1F1B {
     }
 
     fn fetch_one(&mut self, state: &mut StageState) -> Result<()> {
-        let arrangement = self
+        let arrangements = self
             .arrangements
             .as_mut()
             .ok_or(anyhow!("Arrangements not initialized"))?;
         let rank = state.stage.stage_idx;
 
         if state.complete(self.num_minibatch) {
-            arrangement[rank].push(MiniBatch::Nops);
+            arrangements[rank].push(MiniBatch::Nops);
             state.curr_time += 1;
             return Ok(());
         }
@@ -88,70 +88,76 @@ impl Strategy1F1B {
 
         if rank == 0 {
             if state.curr_time == 0 {
-                arrangement[rank].push(MiniBatch::Forward(0));
+                arrangements[rank].push(MiniBatch::Forward(0));
                 state.forward_idx += 1;
                 state.curr_time += 1;
                 return Ok(());
             }
             let next_rank = next_rank.unwrap();
-            let forward_batch = arrangement[rank][state.curr_time - 1].clone();
-            let backward_batch = arrangement[next_rank][state.curr_time - 1].clone();
+            let forward_batch = arrangements[rank][state.curr_time - 1].clone();
+            let backward_batch = arrangements[next_rank][state.curr_time - 1].clone();
 
             if let MiniBatch::Backward(idx) = backward_batch {
                 debug_assert_eq!(state.backward_idx, idx);
-                arrangement[rank].push(MiniBatch::Backward(idx));
+                arrangements[rank].push(MiniBatch::Backward(idx));
                 state.backward_idx += 1;
             } else if let MiniBatch::Forward(idx) = forward_batch {
                 debug_assert_eq!(state.forward_idx, idx + 1);
-                arrangement[rank].push(MiniBatch::Forward(idx + 1));
+                arrangements[rank].push(MiniBatch::Forward(idx + 1));
                 state.forward_idx += 1;
             } else {
                 return Err(anyhow!(
-                    "Invalid state: no forward or backward batch found for rank 0"
+                    "Invalid state: no forward or backward batch found for rank 0: \
+                    curr_time: {}, forward_idx: {}, backward_idx: {},
+                    arrangements: {:?}",
+                    state.curr_time,
+                    state.forward_idx,
+                    state.backward_idx,
+                    arrangements,
                 ));
             }
         } else if rank == self.world_size - 1 {
             if state.curr_time == 0 {
-                arrangement[rank].push(MiniBatch::Nops);
+                arrangements[rank].push(MiniBatch::Nops);
                 state.curr_time += 1;
                 return Ok(());
             }
             let prev_rank = prev_rank.unwrap();
-            let forward_batch = arrangement[prev_rank][state.curr_time - 1].clone();
-            let backward_batch = arrangement[rank][state.curr_time - 1].clone();
+            let forward_batch = arrangements[prev_rank][state.curr_time - 1].clone();
+            let backward_batch = arrangements[rank][state.curr_time - 1].clone();
 
             if let MiniBatch::Forward(idx) = backward_batch {
                 debug_assert_eq!(state.backward_idx, idx);
-                arrangement[rank].push(MiniBatch::Backward(idx));
+                arrangements[rank].push(MiniBatch::Backward(idx));
                 state.backward_idx += 1;
             } else if let MiniBatch::Forward(idx) = forward_batch {
-                debug_assert_eq!(state.forward_idx, idx);
-                arrangement[rank].push(MiniBatch::Backward(idx));
+                debug_assert_eq!(state.forward_idx, idx, "{arrangements:?}");
+                arrangements[rank].push(MiniBatch::Forward(idx));
                 state.forward_idx += 1;
             } else {
-                arrangement[rank].push(MiniBatch::Nops);
+                arrangements[rank].push(MiniBatch::Nops);
             }
         } else {
             if state.curr_time == 0 {
-                arrangement[rank].push(MiniBatch::Nops);
+                arrangements[rank].push(MiniBatch::Nops);
                 state.curr_time += 1;
                 return Ok(());
             }
             let next_rank = next_rank.unwrap();
             let prev_rank = prev_rank.unwrap();
-            let forward_batch = arrangement[prev_rank][state.curr_time - 1].clone();
-            let backward_batch = arrangement[next_rank][state.curr_time - 1].clone();
+            let forward_batch = arrangements[prev_rank][state.curr_time - 1].clone();
+            let backward_batch = arrangements[next_rank][state.curr_time - 1].clone();
 
             if let MiniBatch::Backward(idx) = backward_batch {
                 debug_assert_eq!(state.backward_idx, idx);
-                arrangement[rank].push(MiniBatch::Backward(idx));
+                arrangements[rank].push(MiniBatch::Backward(idx));
                 state.backward_idx += 1;
             } else if let MiniBatch::Forward(idx) = forward_batch {
                 debug_assert_eq!(state.forward_idx, idx);
-                arrangement[rank].push(MiniBatch::Forward(idx));
+                arrangements[rank].push(MiniBatch::Forward(idx));
                 state.forward_idx += 1;
             } else {
-                arrangement[rank].push(MiniBatch::Nops);
+                arrangements[rank].push(MiniBatch::Nops);
             }
         }
 
@@ -164,11 +170,12 @@ impl Strategy1F1B {
 impl Strategy for Strategy1F1B {
     fn new(world_size: usize, num_minibatch: usize) -> Self {
         let devices = Self::init_1f1b_devices(world_size);
+        let arrangements = Some(vec![Vec::<MiniBatch>::new(); world_size]);
         Self {
             stage_states: devices,
             world_size,
             num_minibatch,
-            arrangements: None,
+            arrangements,
         }
     }
 
